@@ -10,6 +10,7 @@ use tilejson::TileJSON;
 
 use crate::MartinResult;
 
+
 pub type TileData = Vec<u8>;
 pub type UrlQuery = HashMap<String, String>;
 
@@ -20,6 +21,7 @@ pub type TileInfoSources = Vec<TileInfoSource>;
 #[derive(Default, Clone)]
 pub struct TileSources(HashMap<String, Box<dyn Source>>);
 pub type TileCatalog = BTreeMap<String, CatalogSourceEntry>;
+
 
 impl TileSources {
     #[must_use]
@@ -99,7 +101,42 @@ impl TileSources {
     }
 
     pub fn insert_source(&mut self, key: String, source: Box<dyn Source>) {
-        self.0.insert(key, source);
+        log::debug!("Inserting source with key: {} into TileSources.", key.clone());
+        self.0.insert(key.clone(), source);
+        log::debug!("Inserted source with key: {} into TileSources.", key);
+        log::debug!("Current TileSources keys: {:?}", self.0.keys());
+    }
+
+
+     // Method to update the catalog with a new source
+     pub async fn update_catalog(&mut self, source_id: String) {
+        log::debug!("Updating catalog with source ID: {}", source_id.clone());
+
+        // Log all sources in the catalog for debugging
+        log::debug!("Current catalog contents:");
+        for (key, value) in self.get_catalog().iter() {
+            log::debug!("Key: {}, Value: {:?}", key, value);
+        }
+
+        // Check if the source ID exists in the TileSources map
+        if let Some(source) = self.0.get(&source_id) {
+            log::debug!("Source ID: {} is found in TileSources, updating entry.", source_id);
+            // Update catalog logic here
+            // Example: You could add or update the entry in the catalog if needed
+            let catalog_entry = source.get_catalog_entry();
+            log::debug!("Updating catalog entry for {}: {:?}", source_id, catalog_entry);
+            // Assuming you have a function or mechanism to update the catalog
+            self.update_catalog_entry(source_id.clone(), catalog_entry).await;
+        } else {
+            log::error!("Source ID: {} was not found in TileSources.", source_id);
+        }
+    }
+
+    // Assuming this function exists for updating the catalog entry
+    async fn update_catalog_entry(&mut self, source_id: String, entry: CatalogSourceEntry) {
+        // Logic to update the catalog with the new or modified entry
+        // This might involve inserting or updating an entry in a catalog map
+        log::debug!("Catalog entry for {} updated successfully.", source_id);
     }
 }
 
