@@ -4,7 +4,7 @@
 mod config;
 pub use config::{read_config, Config, ServerState};
 
-pub mod source;
+mod source;
 pub use source::{CatalogSourceEntry, Source, Tile, TileData, TileSources, UrlQuery};
 
 mod utils;

@@ -22,6 +22,12 @@ static DEFAULT_EXTENT: u32 = 4096;
 static DEFAULT_BUFFER: u32 = 64;
 static DEFAULT_CLIP_GEOM: bool = true;
 
+use crate::srv::server::{Catalog, AddSourceInput, SourceMetadata}; // Ensure these paths are correct
+use actix_web::Error; // Or define your own Error type if needed
+
+
+
+
 /// Examine a database to get a list of all tables that have geometry columns.
 pub async fn query_available_tables(pool: &PgPool) -> PgResult<SqlTableInfoMapMapMap> {
     let conn = pool.get().await?;
@@ -237,4 +243,14 @@ FROM {schema}.{table};
         .map_err(|e| PostgresError(e, "querying table bounds"))?
         .get::<_, Option<ewkb::Polygon>>("bounds")
         .and_then(|p| polygon_to_bbox(&p)))
+}
+
+pub async fn fetch_postgis_metadata(schema: &str, table_or_function: &str) -> Result<SourceMetadata, Error> {
+    // Implement your logic here to query PostgreSQL and fetch the metadata
+    // For now, let's assume you have a structure like this:
+    Ok(SourceMetadata {
+        schema: schema.to_string(),
+        table_or_function: table_or_function.to_string(),
+        // Add other necessary metadata fields here
+    })
 }

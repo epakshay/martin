@@ -1,12 +1,10 @@
 use clap::Parser;
 use log::{error, info, log_enabled};
-use martin::{read_config, Config, MartinResult};
 use martin::args::{Args, OsEnv};
-use martin::pg::pool::PgPool;
-use martin::source::TileSources;
-use std::sync::{Arc, Mutex};
 use martin::srv::new_server;
-use martin::{ServerState, OptOneMany};
+use martin::{read_config, Config, MartinResult};
+use martin::MartinError;
+
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -36,22 +34,7 @@ async fn start(args: Args) -> MartinResult<()> {
     #[cfg(feature = "webui")]
     let web_ui_mode = config.srv.web_ui.unwrap_or_default();
 
-    // Extract PgConfig from OptOneMany<PgConfig>
-    let pg_config = match config.postgres {
-        OptOneMany::One(pg_config) => pg_config,
-        OptOneMany::Many(pg_configs) => pg_configs[0].clone(),
-        OptOneMany::NoVals => {
-            panic!("Postgres config missing")
-        },
-    };
-    
-    let pg_pool = PgPool::new(&pg_config).await.expect("Failed to create PgPool");
-
-    // Initialize actual instances
-    let tile_sources = Arc::new(Mutex::new(TileSources::default()));
-
-    let (server, listen_addresses) = new_server(config.srv, sources, pg_pool, tile_sources)?;
-    
+    let (server, listen_addresses) = new_server(config.srv, sources)?;
     info!("Martin has been started on {listen_addresses}.");
     info!("Use http://{listen_addresses}/catalog to get the list of available sources.");
 
@@ -64,7 +47,7 @@ async fn start(args: Args) -> MartinResult<()> {
         );
     }
 
-    server.await
+    server.await.map_err(MartinError::from)
 }
 
 #[actix_web::main]

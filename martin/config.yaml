@@ -1,0 +1,29 @@
+# Martin Configuration File
+
+# Set the connection keep alive timeout
+keep_alive: 75
+
+# Bind socket address
+listen_addresses: '0.0.0.0:3000'
+
+# TileJSON URL path prefix
+base_path: /tiles
+
+# Number of web server workers
+worker_processes: 8
+
+# Memory for caching tiles
+cache_size_mb: 1024
+
+# Preferred compression encoding
+preferred_encoding: gzip
+
+# Database configuration
+postgres:
+  connection_string: 'postgres://postgismapogtest:Dksi0_skidjS3d@testing-mapog.cw3winvwunij.us-east-2.rds.amazonaws.com/igismap'  # Replace with your actual database connection details
+  default_srid: 4326
+  pool_size: 20
+  auto_bounds: quick
+  auto_publish:
+    tables: false
+    functions: false

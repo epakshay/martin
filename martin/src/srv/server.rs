@@ -1,5 +1,3 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::string::ToString;
 use std::time::Duration;
 
@@ -7,10 +5,9 @@ use actix_cors::Cors;
 use actix_web::error::ErrorInternalServerError;
 use actix_web::http::header::CACHE_CONTROL;
 use actix_web::middleware::TrailingSlash;
+use actix_web::web::Data;
 use actix_web::{middleware, route, web, App, HttpResponse, HttpServer, Responder};
-use futures::TryFutureExt;
-#[cfg(feature = "lambda")]
-use lambda_web::{is_running_on_lambda, run_actix_on_lambda};
+use actix_web::dev::Server; // Import Server type
 use log::error;
 use serde::{Deserialize, Serialize};
 
@@ -21,30 +18,31 @@ use crate::source::TileCatalog;
 use crate::srv::config::{SrvConfig, KEEP_ALIVE_DEFAULT, LISTEN_ADDRESSES_DEFAULT};
 use crate::srv::tiles::get_tile;
 use crate::srv::tiles_info::get_source_info;
-use crate::srv::tiles_info::add_source;
 use crate::MartinError::BindingError;
 use crate::MartinResult;
 
-use std::sync::{Arc, Mutex};
-use actix_web::web::Data;
-use crate::pg::PgPool;
-use crate::source::TileSources;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
-#[cfg(feature = "webui")]
-mod webui {
-    #![allow(clippy::unreadable_literal)]
-    #![allow(clippy::wildcard_imports)]
-    include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+use crate::pg::pg_source::add_source_to_catalog;
+use std::collections::HashMap;
+
+// Define the SourceMetadata struct
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceMetadata {
+    pub schema: String,
+    pub table_or_function: String,
+    // Add other fields as necessary
 }
 
-/// List of keywords that cannot be used as source IDs. Some of these are reserved for future use.
-/// Reserved keywords must never end in a "dot number" (e.g. ".1").
-/// This list is documented in the `docs/src/using.md` file, which should be kept in sync.
-pub const RESERVED_KEYWORDS: &[&str] = &[
-    "_", "catalog", "config", "font", "health", "help", "index", "manifest", "metrics", "refresh",
-    "reload", "sprite", "status",
-];
+// Define the AddSourceInput struct
+#[derive(Deserialize)]
+pub struct AddSourceInput {
+    pub schema: String,
+    pub table_or_function: String,
+}
 
+// Define the Catalog struct with sources as a HashMap
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Catalog {
     pub tiles: TileCatalog,
@@ -52,8 +50,10 @@ pub struct Catalog {
     pub sprites: crate::sprites::SpriteCatalog,
     #[cfg(feature = "fonts")]
     pub fonts: crate::fonts::FontCatalog,
+    pub sources: HashMap<String, SourceMetadata>, // Add a field to store sources
 }
 
+// Implement methods for the Catalog struct
 impl Catalog {
     pub fn new(state: &ServerState) -> MartinResult<Self> {
         Ok(Self {
@@ -62,37 +62,23 @@ impl Catalog {
             sprites: state.sprites.get_catalog()?,
             #[cfg(feature = "fonts")]
             fonts: state.fonts.get_catalog(),
+            sources: HashMap::new(), // Initialize the sources field with an empty HashMap
         })
+    }
+
+    pub fn add_source(&mut self, metadata: SourceMetadata) {
+        let key = format!("{}.{}", metadata.schema, metadata.table_or_function);
+        self.sources.insert(key, metadata);
     }
 }
 
+// Map internal errors to actix_web::Error
 pub fn map_internal_error<T: std::fmt::Display>(e: T) -> actix_web::Error {
     error!("{e}");
     ErrorInternalServerError(e.to_string())
 }
 
-/// Root path in case web front is disabled.
-#[cfg(not(feature = "webui"))]
-#[route("/", method = "GET", method = "HEAD")]
-#[allow(clippy::unused_async)]
-async fn get_index_no_ui() -> &'static str {
-    "Martin server is running. The WebUI feature was disabled at the compile time.\n\n\
-    A list of all available sources is at /catalog\n\n\
-    See documentation https://github.com/maplibre/martin"
-}
-
-/// Root path in case web front is disabled and the WebUI feature is enabled.
-#[cfg(feature = "webui")]
-#[route("/", method = "GET", method = "HEAD")]
-#[allow(clippy::unused_async)]
-async fn get_index_ui_disabled() -> &'static str {
-    "Martin server is running.\n\n
-    The WebUI feature can be enabled with the --webui enable-for-all CLI flag or in the config file, making it available to all users.\n\n
-    A list of all available sources is at /catalog\n\n\
-    See documentation https://github.com/maplibre/martin"
-}
-
-/// Return 200 OK if healthy. Used for readiness and liveness probes.
+// Define the health check endpoint
 #[route("/health", method = "GET", method = "HEAD")]
 #[allow(clippy::unused_async)]
 async fn get_health() -> impl Responder {
@@ -101,6 +87,7 @@ async fn get_health() -> impl Responder {
         .message_body("OK")
 }
 
+// Define the catalog endpoint
 #[route(
     "/catalog",
     method = "GET",
@@ -112,12 +99,28 @@ async fn get_catalog(catalog: Data<Catalog>) -> impl Responder {
     HttpResponse::Ok().json(catalog)
 }
 
+// Define the add source endpoint
+#[route("/add_source", method = "POST")]
+async fn post_add_source(
+    catalog: web::Data<Arc<RwLock<Catalog>>>,
+    input: web::Json<AddSourceInput>,
+) -> impl Responder {
+    match add_source_to_catalog(&catalog, &input).await {
+        Ok(_) => HttpResponse::Ok().body("Source added"),
+        Err(e) => {
+            eprintln!("Error adding source: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to add source")
+        }
+    }
+}
+
+// Configure the web service routes
 pub fn router(cfg: &mut web::ServiceConfig, #[allow(unused_variables)] usr_cfg: &SrvConfig) {
     cfg.service(get_health)
         .service(get_catalog)
         .service(get_source_info)
-        .service(add_source)
-        .service(get_tile);
+        .service(get_tile)
+        .service(post_add_source); // Add the new POST route here
 
     #[cfg(feature = "sprites")]
     cfg.service(crate::srv::sprites::get_sprite_json)
@@ -126,33 +129,14 @@ pub fn router(cfg: &mut web::ServiceConfig, #[allow(unused_variables)] usr_cfg: 
     #[cfg(feature = "fonts")]
     cfg.service(crate::srv::fonts::get_font);
 
-    #[cfg(feature = "webui")]
-    {
-        // TODO: this can probably be simplified with a wrapping middleware,
-        //       which would share usr_cfg from Data<> with all routes.
-        if usr_cfg.web_ui.unwrap_or_default() == WebUiMode::EnableForAll {
-            cfg.service(actix_web_static_files::ResourceFiles::new(
-                "/",
-                webui::generate(),
-            ));
-        } else {
-            cfg.service(get_index_ui_disabled);
-        }
-    }
-
     #[cfg(not(feature = "webui"))]
-    cfg.service(get_index_no_ui);
+    {
+        cfg.service(web::resource("/").route(web::get().to(get_index_no_ui)));
+    }
 }
 
-type Server = Pin<Box<dyn Future<Output = MartinResult<()>>>>;
-
-/// Create a future for an Actix web server together with the listening address.
-pub fn new_server(
-    config: SrvConfig,
-    state: ServerState,
-    pg_pool: PgPool,
-    tile_sources: Arc<Mutex<TileSources>>,  // Pass wrapped TileSources
-) -> MartinResult<(Server, String)> {
+// Create a new server with Actix-web
+pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server, String)> {
     let catalog = Catalog::new(&state)?;
 
     let keep_alive = Duration::from_secs(config.keep_alive.unwrap_or(KEEP_ALIVE_DEFAULT));
@@ -169,15 +153,7 @@ pub fn new_server(
 
         let app = App::new()
             .app_data(Data::new(state.tiles.clone()))
-            .app_data(Data::new(state.cache.clone()))
-            .app_data(Data::new(pg_pool.clone()))
-            .app_data(Data::new(tile_sources.clone()))  // Ensure TileSources is properly wrapped
-            .app_data(Data::new(catalog.clone()))
-            .app_data(Data::new(config.clone()))
-            .wrap(cors_middleware)
-            .wrap(middleware::NormalizePath::new(TrailingSlash::MergeOnly))
-            .wrap(middleware::Logger::default())
-            .configure(|c| router(c, &config));
+            .app_data(Data::new(state.cache.clone()));
 
         #[cfg(feature = "sprites")]
         let app = app.app_data(Data::new(state.sprites.clone()));
@@ -185,14 +161,13 @@ pub fn new_server(
         #[cfg(feature = "fonts")]
         let app = app.app_data(Data::new(state.fonts.clone()));
 
-        app
+        app.app_data(Data::new(catalog.clone()))
+            .app_data(Data::new(config.clone()))
+            .wrap(cors_middleware)
+            .wrap(middleware::NormalizePath::new(TrailingSlash::MergeOnly))
+            .wrap(middleware::Logger::default())
+            .configure(|c| router(c, &config))
     };
-
-    #[cfg(feature = "lambda")]
-    if is_running_on_lambda() {
-        let server = run_actix_on_lambda(factory).err_into();
-        return Ok((Box::pin(server), "(aws lambda)".into()));
-    }
 
     let server = HttpServer::new(factory)
         .bind(listen_addresses.clone())
@@ -200,8 +175,52 @@ pub fn new_server(
         .keep_alive(keep_alive)
         .shutdown_timeout(0)
         .workers(worker_processes)
-        .run()
-        .err_into();
+        .run();
 
-    Ok((Box::pin(server), listen_addresses))
+    Ok((server, listen_addresses))
+}
+
+#[cfg(test)]
+pub mod tests {
+    use async_trait::async_trait;
+    use martin_tile_utils::{Encoding, Format, TileCoord, TileInfo};
+    use tilejson::TileJSON;
+
+    use super::*;
+    use crate::source::{Source, TileData};
+    use crate::UrlQuery;
+
+    #[derive(Debug, Clone)]
+    pub struct TestSource {
+        pub id: &'static str,
+        pub tj: TileJSON,
+        pub data: TileData,
+    }
+
+    #[async_trait]
+    impl Source for TestSource {
+        fn get_id(&self) -> &str {
+            self.id
+        }
+
+        fn get_tilejson(&self) -> &TileJSON {
+            &self.tj
+        }
+
+        fn get_tile_info(&self) -> TileInfo {
+            TileInfo::new(Format::Mvt, Encoding::Uncompressed)
+        }
+
+        fn clone_source(&self) -> Box<dyn Source> {
+            unimplemented!()
+        }
+
+        async fn get_tile(
+            &self,
+            _xyz: TileCoord,
+            _url_query: Option<&UrlQuery>,
+        ) -> MartinResult<TileData> {
+            Ok(self.data.clone())
+        }
+    }
 }

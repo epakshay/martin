@@ -86,10 +86,12 @@ subst = { version = "0.3", features = ["yaml"] }
 thiserror = "1"
 tile-grid = "0.6"
 tilejson = "0.4"
-tokio = { version = "1", features = ["macros"] }
+tokio = { version = "1", features = ["full","macros"] }
 tokio-postgres-rustls = "0.12"
 url = "2.5"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+warp = "0.3"
+
 
 [profile.dev.package]
 # See https://github.com/launchbadge/sqlx#compile-time-verification
