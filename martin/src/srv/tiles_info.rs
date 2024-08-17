@@ -1,3 +1,6 @@
+use actix_web::error::ErrorInternalServerError;
+use actix_web::web;
+use crate::pg::pool::PgPool;
 use std::string::ToString;
 
 use actix_web::error::ErrorBadRequest;
@@ -10,6 +13,9 @@ use tilejson::{tilejson, TileJSON};
 
 use crate::source::{Source, TileSources};
 use crate::srv::SrvConfig;
+use std::sync::Mutex;
+
+
 
 #[derive(Deserialize)]
 pub struct SourceIDsRequest {
@@ -231,3 +237,56 @@ pub mod tests {
         );
     }
 }
+
+#[derive(Deserialize)]
+struct NewSourceRequest {
+    schema_name: String,
+    source_name: String,
+}
+
+#[route(
+    "/add_source",
+    method = "POST",
+    method = "HEAD",
+    wrap = "middleware::Compress::default()"
+)]
+#[allow(clippy::unused_async)]
+async fn add_source(
+    req: HttpRequest,
+    data: web::Json<NewSourceRequest>,
+    sources: Data<Mutex<TileSources>>, // Updated to use Mutex
+    pool: Data<PgPool>,
+) -> ActixResult<HttpResponse> {
+    let source_name = &data.source_name;
+    let schema_name = &data.schema_name;
+
+    // Check if the table exists in the PostgreSQL database
+    let conn = pool.get().await.map_err(|e| {
+        ErrorInternalServerError(format!("Error getting database connection: {}", e))
+    })?;
+    
+    let source_exists = conn.query_opt(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2",
+        &[&schema_name, &source_name],
+    ).await.map_err(|e| {
+        ErrorBadRequest(format!("Error querying database: {}", e))
+    })?;
+
+    if source_exists.is_none() {
+        return Err(ErrorBadRequest(format!(
+            "Source {}.{} does not exist in the database",
+            schema_name, source_name
+        )));
+    }
+
+    // Lock the Mutex and Add the source to the TileSources
+    sources.lock().unwrap().add_source(schema_name, source_name, &*pool).await.map_err(|e| {
+        ErrorInternalServerError(format!("Error adding source: {}", e))
+    })?;
+
+    Ok(HttpResponse::Ok().json(format!(
+        "Source {}.{} added successfully",
+        schema_name, source_name
+    )))
+}
+

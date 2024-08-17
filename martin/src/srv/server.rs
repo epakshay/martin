@@ -22,6 +22,7 @@ use crate::source::TileCatalog;
 use crate::srv::config::{SrvConfig, KEEP_ALIVE_DEFAULT, LISTEN_ADDRESSES_DEFAULT};
 use crate::srv::tiles::get_tile;
 use crate::srv::tiles_info::get_source_info;
+use crate::srv::tiles_info::add_source;
 use crate::MartinError::BindingError;
 use crate::MartinResult;
 
@@ -111,6 +112,7 @@ pub fn router(cfg: &mut web::ServiceConfig, #[allow(unused_variables)] usr_cfg: 
     cfg.service(get_health)
         .service(get_catalog)
         .service(get_source_info)
+        .service(add_source)
         .service(get_tile);
 
     #[cfg(feature = "sprites")]

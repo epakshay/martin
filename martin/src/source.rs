@@ -97,6 +97,10 @@ impl TileSources {
         }
         is_valid
     }
+
+    pub fn insert_source(&mut self, key: String, source: Box<dyn Source>) {
+        self.0.insert(key, source);
+    }
 }
 
 #[async_trait]

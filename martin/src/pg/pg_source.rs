@@ -1,3 +1,5 @@
+use crate::pg::pool::PgPool;
+use crate::MartinError;
 use async_trait::async_trait;
 use deadpool_postgres::tokio_postgres::types::{ToSql, Type};
 use log::debug;
@@ -5,11 +7,12 @@ use martin_tile_utils::Encoding::Uncompressed;
 use martin_tile_utils::Format::Mvt;
 use martin_tile_utils::{TileCoord, TileInfo};
 use tilejson::TileJSON;
+use std::collections::BTreeMap;
+use serde_json::Value as JsonValue;
 
-use crate::pg::pool::PgPool;
 use crate::pg::utils::query_to_json;
 use crate::pg::PgError::{GetTileError, GetTileWithQueryError, PrepareQueryError};
-use crate::source::{Source, TileData, UrlQuery};
+use crate::source::{Source, TileData, UrlQuery, TileSources};
 use crate::MartinResult;
 
 #[derive(Clone, Debug)]
@@ -130,3 +133,50 @@ impl PgSqlInfo {
         }
     }
 }
+
+impl TileSources {
+    pub async fn add_source(
+        &mut self,
+        schema_name: &str,
+        source_name: &str,
+        pool: &PgPool,
+    ) -> Result<(), MartinError> {
+        let source_id = format!("{}.{}", schema_name, source_name);
+
+        let tilejson = TileJSON {
+            tilejson: "2.2.0".to_string(),
+            name: Some(source_name.to_string()),
+            description: Some(format!("Dynamic source added: {}.{}", schema_name, source_name)),
+            version: Some("1.0.0".to_string()),
+            tiles: vec![],
+            grids: None,
+            data: None,
+            minzoom: Some(0),
+            maxzoom: Some(22),
+            bounds: None,
+            center: None,
+            attribution: None,
+            template: None,
+            legend: None,
+            vector_layers: None,
+            fillzoom: None,
+            other: BTreeMap::new(),
+            scheme: None,
+        };
+
+        let sql_query = format!("SELECT * FROM {}.{}", schema_name, source_name);
+        let info = PgSqlInfo {
+            sql_query,
+            signature: "".to_string(),
+            use_url_query: false,
+        };
+
+        let new_pg_source = PgSource::new(source_id, info, tilejson, pool.clone());
+
+        // Use the new public method to insert the source
+        self.insert_source(source_name.to_string(), Box::new(new_pg_source));
+
+        Ok(())
+    }
+}
+
