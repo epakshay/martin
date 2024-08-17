@@ -5,17 +5,17 @@ use std::string::ToString;
 
 use actix_web::error::ErrorBadRequest;
 use actix_web::http::Uri;
-use actix_web::web::Path;
+use actix_web::web::{Data, Path};
 use actix_web::{middleware, route, HttpRequest, HttpResponse, Result as ActixResult};
-
 use itertools::Itertools as _;
 use serde::Deserialize;
 use tilejson::{tilejson, TileJSON};
 
 use crate::source::{Source, TileSources};
 use crate::srv::SrvConfig;
-use std::sync::{Arc, Mutex};
-use actix_web::web::Data;
+use std::sync::Mutex;
+
+
 
 #[derive(Deserialize)]
 pub struct SourceIDsRequest {
@@ -32,10 +32,9 @@ pub struct SourceIDsRequest {
 async fn get_source_info(
     req: HttpRequest,
     path: Path<SourceIDsRequest>,
-    sources: Data<Arc<Mutex<TileSources>>>,
+    sources: Data<TileSources>,
     srv_config: Data<SrvConfig>,
 ) -> ActixResult<HttpResponse> {
-    let sources = sources.lock().unwrap();
     let sources = sources.get_sources(&path.source_ids, None)?.0;
 
     let tiles_path = if let Some(base_path) = &srv_config.base_path {
@@ -161,6 +160,84 @@ pub fn merge_tilejson(sources: &[&dyn Source], tiles_url: String) -> TileJSON {
     result
 }
 
+#[cfg(test)]
+pub mod tests {
+    use std::collections::BTreeMap;
+
+    use tilejson::{Bounds, VectorLayer};
+
+    use super::*;
+    use crate::srv::server::tests::TestSource;
+
+    #[test]
+    fn test_merge_tilejson() {
+        let url = "http://localhost:8888/foo/{z}/{x}/{y}".to_string();
+        let src1 = TestSource {
+            id: "id",
+            tj: tilejson! {
+                tiles: vec![],
+                name: "layer1".to_string(),
+                minzoom: 5,
+                maxzoom: 10,
+                bounds: Bounds::new(-10.0, -20.0, 10.0, 20.0),
+                vector_layers: vec![
+                    VectorLayer::new("layer1".to_string(),
+                    BTreeMap::from([
+                        ("a".to_string(), "x1".to_string()),
+                    ]))
+                ],
+            },
+            data: Vec::default(),
+        };
+        let tj = merge_tilejson(&[&src1], url.clone());
+        assert_eq!(
+            TileJSON {
+                tiles: vec![url.clone()],
+                ..src1.tj.clone()
+            },
+            tj
+        );
+
+        let src2 = TestSource {
+            id: "id",
+            tj: tilejson! {
+                tiles: vec![],
+                name: "layer2".to_string(),
+                minzoom: 7,
+                maxzoom: 12,
+                bounds: Bounds::new(-20.0, -5.0, 5.0, 50.0),
+                vector_layers: vec![
+                    VectorLayer::new("layer2".to_string(),
+                    BTreeMap::from([
+                        ("b".to_string(), "x2".to_string()),
+                    ]))
+                ],
+            },
+            data: Vec::default(),
+        };
+
+        let tj = merge_tilejson(&[&src1, &src2], url.clone());
+        assert_eq!(tj.tiles, vec![url]);
+        assert_eq!(tj.name, Some("layer1,layer2".to_string()));
+        assert_eq!(tj.minzoom, Some(5));
+        assert_eq!(tj.maxzoom, Some(12));
+        assert_eq!(tj.bounds, Some(Bounds::new(-20.0, -20.0, 10.0, 50.0)));
+        assert_eq!(
+            tj.vector_layers,
+            Some(vec![
+                VectorLayer::new(
+                    "layer1".to_string(),
+                    BTreeMap::from([("a".to_string(), "x1".to_string())])
+                ),
+                VectorLayer::new(
+                    "layer2".to_string(),
+                    BTreeMap::from([("b".to_string(), "x2".to_string())])
+                ),
+            ])
+        );
+    }
+}
+
 #[derive(Deserialize)]
 struct NewSourceRequest {
     schema_name: String,
@@ -177,7 +254,7 @@ struct NewSourceRequest {
 async fn add_source(
     req: HttpRequest,
     data: web::Json<NewSourceRequest>,
-    sources: Data<Arc<Mutex<TileSources>>>,
+    sources: Data<Mutex<TileSources>>, // Updated to use Mutex
     pool: Data<PgPool>,
 ) -> ActixResult<HttpResponse> {
     let source_name = &data.source_name;
@@ -202,9 +279,8 @@ async fn add_source(
         )));
     }
 
-    // Lock the mutex before accessing sources
-    let mut sources_guard = sources.lock().unwrap();
-    sources_guard.add_source(schema_name, source_name, &*pool).await.map_err(|e| {
+    // Lock the Mutex and Add the source to the TileSources
+    sources.lock().unwrap().add_source(schema_name, source_name, &*pool).await.map_err(|e| {
         ErrorInternalServerError(format!("Error adding source: {}", e))
     })?;
 
@@ -213,3 +289,4 @@ async fn add_source(
         schema_name, source_name
     )))
 }
+

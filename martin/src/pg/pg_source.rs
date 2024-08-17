@@ -171,13 +171,11 @@ impl TileSources {
             use_url_query: false,
         };
 
-        let new_pg_source = PgSource::new(source_id.clone(), info, tilejson, pool.clone());
+        let new_pg_source = PgSource::new(source_id, info, tilejson, pool.clone());
 
-        // Use the public method to insert the source
-        self.insert_source(source_id.clone(), Box::new(new_pg_source) as Box<dyn Source>);
+        // Use the new public method to insert the source
+        self.insert_source(source_name.to_string(), Box::new(new_pg_source));
 
-        // Update the catalog
-        self.update_catalog(source_id.clone()).await;
         Ok(())
     }
 }
