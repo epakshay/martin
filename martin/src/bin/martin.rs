@@ -2,7 +2,8 @@ use clap::Parser;
 use log::{error, info, log_enabled};
 use martin::args::{Args, OsEnv};
 use martin::srv::new_server;
-use martin::{read_config, Config, MartinResult};
+use martin::{read_config, Config, MartinResult, MartinError};
+use martin::OptOneMany;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -32,7 +33,18 @@ async fn start(args: Args) -> MartinResult<()> {
     #[cfg(feature = "webui")]
     let web_ui_mode = config.srv.web_ui.unwrap_or_default();
 
-    let (server, listen_addresses) = new_server(config.srv, sources)?;
+    // Extract PgConfig from the config file
+    let pg_config = match &config.postgres {
+        OptOneMany::One(pg_config) => pg_config.clone(),
+        OptOneMany::Many(pg_configs) => {
+            pg_configs.first().expect("No PgConfig found").clone()
+        },
+        _ => {
+            return Err(MartinError::NoSources);  // Or use a more specific ConfigError
+        },
+    };
+
+    let (server, listen_addresses) = new_server(config.srv, sources, pg_config).await?;
     info!("Martin has been started on {listen_addresses}.");
     info!("Use http://{listen_addresses}/catalog to get the list of available sources.");
 

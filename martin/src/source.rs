@@ -7,8 +7,17 @@ use log::debug;
 use martin_tile_utils::{TileCoord, TileInfo};
 use serde::{Deserialize, Serialize};
 use tilejson::TileJSON;
+use tilejson::VectorLayer;
+use tilejson::Bounds;
 
 use crate::MartinResult;
+use crate::pg::{PgPool, PgResult};
+use crate::pg::query_tables::query_available_tables;
+use crate::pg::query_functions::query_available_function;
+use crate::pg::pg_source::{PgSource, PgSqlInfo};
+
+// Import TableInfo here
+use crate::pg::config_table::TableInfo;
 
 pub type TileData = Vec<u8>;
 pub type UrlQuery = HashMap<String, String>;
@@ -49,9 +58,6 @@ impl TileSources {
             .as_ref())
     }
 
-    /// Get a list of sources, and the tile info for the merged sources.
-    /// Ensure that all sources have the same format and encoding.
-    /// If zoom is specified, filter out sources that do not support it.
     pub fn get_sources(
         &self,
         source_ids: &str,
@@ -66,8 +72,6 @@ impl TileSources {
             let src_inf = src.get_tile_info();
             use_url_query |= src.support_url_query();
 
-            // make sure all sources have the same format and encoding
-            // TODO: support multiple encodings of the same format
             match info {
                 Some(inf) if inf == src_inf => {}
                 Some(inf) => Err(ErrorNotFound(format!(
@@ -76,7 +80,6 @@ impl TileSources {
                 None => info = Some(src_inf),
             }
 
-            // TODO: Use chained-if-let once available
             if match zoom {
                 Some(zoom) if Self::check_zoom(src, id, zoom) => true,
                 None => true,
@@ -86,7 +89,6 @@ impl TileSources {
             }
         }
 
-        // format is guaranteed to be Some() here
         Ok((sources, use_url_query, info.unwrap()))
     }
 
@@ -96,6 +98,124 @@ impl TileSources {
             debug!("Zoom {zoom} is not valid for source {id}");
         }
         is_valid
+    }
+
+    pub async fn update_catalog_dynamic(&mut self, pool: &PgPool) -> PgResult<()> {
+        let new_tables = query_available_tables(pool).await?;
+        let new_functions = query_available_function(pool).await?;
+        let bounds = Bounds {
+            left: -180.0,
+            bottom: -85.0,
+            right: 180.0,
+            top: 85.0,
+        };
+        
+
+
+        for (schema, tables_map) in new_tables {
+            for (table_name, _) in &tables_map {
+                let source_id = format!("{}.{}", schema, table_name);
+        
+                if !self.0.contains_key(&source_id) {
+                    let sql_query = format!(
+                        "SELECT ST_AsMVT(tile) FROM (SELECT * FROM {}.{} WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)) AS tile;",
+                        schema,
+                        table_name
+                    );
+                    let has_query_params = true;
+                    let signature = format!("{}-{}", schema, table_name);
+        
+                    let pg_info = PgSqlInfo::new(sql_query, has_query_params, signature);
+                    
+                    let tilejson = TileJSON {
+                        tilejson: "2.0.0".to_string(),
+                        name: Some(source_id.clone()),
+                        tiles: vec![],  
+                        minzoom: Some(0),  // Set defaults if needed
+                        maxzoom: Some(22), // Set defaults if needed
+                        bounds: Some(bounds), // Default bounds
+                        vector_layers: Some(vec![
+                            VectorLayer {
+                                id: source_id.clone(),
+                                fields: BTreeMap::new(), // Empty or default fields
+                                description: None,
+                                maxzoom: None,
+                                minzoom: None,
+                                other: BTreeMap::default(),
+                            }
+                        ]),
+                        attribution: None,
+                        center: None,
+                        description: None,
+                        legend: None,
+                        template: None,
+                        version: None,
+                        scheme: None,
+                        grids: None,
+                        data: None,
+                        fillzoom: None, 
+                        other: BTreeMap::default(),
+                    };
+        
+                    let new_source = PgSource::new(source_id.clone(), pg_info, tilejson, pool.clone());
+                    self.0.insert(source_id, Box::new(new_source));
+                }
+            }
+        }
+        
+        for (schema, func_map) in new_functions {
+            for (func_name, _) in &func_map {
+                let source_id = format!("{}.{}", schema, func_name);
+        
+                if !self.0.contains_key(&source_id) {
+                    let sql_query = format!(
+                        "SELECT ST_AsMVT(tile) FROM (SELECT * FROM {}.{}($1, $2, $3)) AS tile;",
+                        schema,
+                        func_name
+                    );
+                    let has_query_params = true;
+                    let signature = format!("{}-{}", schema, func_name);
+        
+                    let pg_info = PgSqlInfo::new(sql_query, has_query_params, signature);
+                    
+                    let tilejson = TileJSON {
+                        tilejson: "2.0.0".to_string(),
+                        name: Some(source_id.clone()),
+                        tiles: vec![],  
+                        minzoom: Some(0),  // Set defaults if needed
+                        maxzoom: Some(22), // Set defaults if needed
+                        bounds: Some(bounds), // Default bounds
+                        vector_layers: Some(vec![
+                            VectorLayer {
+                                id: source_id.clone(),
+                                fields: BTreeMap::new(), // Empty or default fields
+                                description: None,
+                                maxzoom: None,
+                                minzoom: None,
+                                other: BTreeMap::default(),
+                            }
+                        ]),
+                        attribution: None,
+                        center: None,
+                        description: None,
+                        legend: None,
+                        template: None,
+                        version: None,
+                        scheme: None,
+                        grids: None,
+                        data: None,
+                        fillzoom: None, 
+                        other: BTreeMap::default(),
+                    };
+        
+                    let new_source = PgSource::new(source_id.clone(), pg_info, tilejson, pool.clone());
+                    self.0.insert(source_id, Box::new(new_source));
+                }
+            }
+        }
+        
+
+        Ok(())
     }
 }
 

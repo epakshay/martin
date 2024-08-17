@@ -25,14 +25,16 @@ use crate::{IdResolver, MartinResult, OptOneMany};
 
 pub type UnrecognizedValues = HashMap<String, serde_yaml::Value>;
 
+#[derive(Clone)]  // Only derive `Clone`
 pub struct ServerState {
     pub cache: OptMainCache,
-    pub tiles: TileSources,
+    pub tiles: TileSources,  // `TileSources` does not need to implement `Debug`
     #[cfg(feature = "sprites")]
     pub sprites: SpriteSources,
     #[cfg(feature = "fonts")]
     pub fonts: FontSources,
 }
+
 
 #[serde_with::skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

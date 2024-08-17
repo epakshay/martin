@@ -1,12 +1,12 @@
 mod builder;
 mod config;
-mod config_function;
-mod config_table;
+pub mod config_function;
+pub mod config_table;
 mod errors;
-mod pg_source;
-mod pool;
-mod query_functions;
-mod query_tables;
+pub mod pg_source;
+pub mod pool;
+pub mod query_functions;
+pub mod query_tables;
 mod tls;
 mod utils;
 

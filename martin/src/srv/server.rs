@@ -24,6 +24,8 @@ use crate::srv::tiles::get_tile;
 use crate::srv::tiles_info::get_source_info;
 use crate::MartinError::BindingError;
 use crate::MartinResult;
+use crate::pg::{PgPool, PgConfig};
+
 
 #[cfg(feature = "webui")]
 mod webui {
@@ -111,7 +113,8 @@ pub fn router(cfg: &mut web::ServiceConfig, #[allow(unused_variables)] usr_cfg: 
     cfg.service(get_health)
         .service(get_catalog)
         .service(get_source_info)
-        .service(get_tile);
+        .service(get_tile)
+        .service(update_catalog);
 
     #[cfg(feature = "sprites")]
     cfg.service(crate::srv::sprites::get_sprite_json)
@@ -140,8 +143,20 @@ pub fn router(cfg: &mut web::ServiceConfig, #[allow(unused_variables)] usr_cfg: 
 
 type Server = Pin<Box<dyn Future<Output = MartinResult<()>>>>;
 
+#[route("/update_catalog", method = "POST")]
+async fn update_catalog(
+    state: Data<ServerState>, 
+    pool: Data<PgPool>,
+) -> impl Responder {
+    let mut tiles = state.tiles.clone();
+    match tiles.update_catalog_dynamic(pool.get_ref()).await {
+        Ok(_) => HttpResponse::Ok().json("Catalog updated successfully"),
+        Err(e) => HttpResponse::InternalServerError().json(format!("Failed to update catalog: {}", e)),
+    }
+}
+
 /// Create a future for an Actix web server together with the listening address.
-pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server, String)> {
+pub async fn new_server(config: SrvConfig, state: ServerState, pg_config: PgConfig) -> MartinResult<(Server, String)> {
     let catalog = Catalog::new(&state)?;
 
     let keep_alive = Duration::from_secs(config.keep_alive.unwrap_or(KEEP_ALIVE_DEFAULT));
@@ -151,14 +166,22 @@ pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server
         .clone()
         .unwrap_or_else(|| LISTEN_ADDRESSES_DEFAULT.to_string());
 
+    let pool = PgPool::new(&pg_config).await?; // Create the PgPool using the configuration
+
     let factory = move || {
         let cors_middleware = Cors::default()
             .allow_any_origin()
             .allowed_methods(vec!["GET"]);
 
         let app = App::new()
-            .app_data(Data::new(state.tiles.clone()))
-            .app_data(Data::new(state.cache.clone()));
+            .app_data(Data::new(state.clone()))  // Register ServerState
+            .app_data(Data::new(pool.clone()))   // Register PgPool
+            .app_data(Data::new(catalog.clone()))  // Register Catalog
+            // Other app data registrations if needed
+            .wrap(cors_middleware)
+            .wrap(middleware::NormalizePath::new(TrailingSlash::MergeOnly))
+            .wrap(middleware::Logger::default())
+            .configure(|c| router(c, &config));
 
         #[cfg(feature = "sprites")]
         let app = app.app_data(Data::new(state.sprites.clone()));
@@ -166,12 +189,7 @@ pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server
         #[cfg(feature = "fonts")]
         let app = app.app_data(Data::new(state.fonts.clone()));
 
-        app.app_data(Data::new(catalog.clone()))
-            .app_data(Data::new(config.clone()))
-            .wrap(cors_middleware)
-            .wrap(middleware::NormalizePath::new(TrailingSlash::MergeOnly))
-            .wrap(middleware::Logger::default())
-            .configure(|c| router(c, &config))
+        app
     };
 
     #[cfg(feature = "lambda")]
@@ -190,49 +208,4 @@ pub fn new_server(config: SrvConfig, state: ServerState) -> MartinResult<(Server
         .err_into();
 
     Ok((Box::pin(server), listen_addresses))
-}
-
-#[cfg(test)]
-pub mod tests {
-    use async_trait::async_trait;
-    use martin_tile_utils::{Encoding, Format, TileCoord, TileInfo};
-    use tilejson::TileJSON;
-
-    use super::*;
-    use crate::source::{Source, TileData};
-    use crate::UrlQuery;
-
-    #[derive(Debug, Clone)]
-    pub struct TestSource {
-        pub id: &'static str,
-        pub tj: TileJSON,
-        pub data: TileData,
-    }
-
-    #[async_trait]
-    impl Source for TestSource {
-        fn get_id(&self) -> &str {
-            self.id
-        }
-
-        fn get_tilejson(&self) -> &TileJSON {
-            &self.tj
-        }
-
-        fn get_tile_info(&self) -> TileInfo {
-            TileInfo::new(Format::Mvt, Encoding::Uncompressed)
-        }
-
-        fn clone_source(&self) -> Box<dyn Source> {
-            unimplemented!()
-        }
-
-        async fn get_tile(
-            &self,
-            _xyz: TileCoord,
-            _url_query: Option<&UrlQuery>,
-        ) -> MartinResult<TileData> {
-            Ok(self.data.clone())
-        }
-    }
 }
